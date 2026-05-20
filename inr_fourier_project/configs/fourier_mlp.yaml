@@ -1,0 +1,15 @@
+experiment_name: fourier_mlp
+model:
+  name: fourier_mlp
+  hidden_dim: 256
+  num_layers: 4
+  mapping_size: 256
+  scale: 10.0
+training:
+  num_steps: 5000
+  batch_size: 8192
+  lr: 0.0001
+data:
+  image_path: data/images/example.png
+output:
+  results_dir: results
