@@ -103,12 +103,42 @@ def make_blur_pyramid(
     return targets
 
 
-def get_curriculum_stage(step: int, total_steps: int, num_stages: int) -> int:
+def _normalize_stage_ratios(
+    num_stages: int,
+    stage_ratios: Optional[Sequence[float]],
+) -> Optional[List[float]]:
+    """Validate and normalize optional curriculum stage durations."""
+    if stage_ratios is None:
+        return None
+    if len(stage_ratios) != num_stages:
+        raise ValueError(
+            "stage_ratios length must match num_stages, "
+            f"got {len(stage_ratios)} and {num_stages}."
+        )
+
+    ratios = [float(ratio) for ratio in stage_ratios]
+    if any(ratio < 0.0 for ratio in ratios):
+        raise ValueError("stage_ratios must be non-negative.")
+
+    total = sum(ratios)
+    if total <= 0.0:
+        raise ValueError("stage_ratios must contain positive total duration.")
+
+    return [ratio / total for ratio in ratios]
+
+
+def get_curriculum_stage(
+    step: int,
+    total_steps: int,
+    num_stages: int,
+    stage_ratios: Optional[Sequence[float]] = None,
+) -> int:
     """Return the active curriculum stage for the current training step.
 
     Stages are equal length by default. For four stages, progress in
     ``[0%, 25%)`` maps to stage 0, ``[25%, 50%)`` maps to stage 1,
     ``[50%, 75%)`` maps to stage 2, and ``[75%, 100%]`` maps to stage 3.
+    Passing ``stage_ratios`` makes stages use custom relative durations.
     Steps outside the valid range are clamped to the nearest valid stage.
 
     Args:
@@ -116,6 +146,7 @@ def get_curriculum_stage(step: int, total_steps: int, num_stages: int) -> int:
             ``total_steps``.
         total_steps: Total number of training steps.
         num_stages: Number of curriculum stages.
+        stage_ratios: Optional non-negative relative duration per stage.
 
     Returns:
         The current stage index in ``[0, num_stages - 1]``.
@@ -126,14 +157,29 @@ def get_curriculum_stage(step: int, total_steps: int, num_stages: int) -> int:
         raise ValueError(f"num_stages must be positive, got {num_stages}.")
 
     clamped_step = min(max(int(step), 0), total_steps)
-    stage = int(clamped_step * num_stages // total_steps)
-    return min(stage, num_stages - 1)
+    if clamped_step >= total_steps:
+        return num_stages - 1
+
+    ratios = _normalize_stage_ratios(num_stages, stage_ratios)
+    if ratios is None:
+        stage = int(clamped_step * num_stages // total_steps)
+        return min(stage, num_stages - 1)
+
+    progress = float(clamped_step) / float(total_steps)
+    cumulative = 0.0
+    for stage, ratio in enumerate(ratios):
+        cumulative += ratio
+        if ratio > 0.0 and progress < cumulative:
+            return stage
+
+    return num_stages - 1
 
 
 def get_curriculum_target(
     step: int,
     total_steps: int,
     targets: Sequence[torch.Tensor],
+    stage_ratios: Optional[Sequence[float]] = None,
 ) -> torch.Tensor:
     """Return the target image for the current curriculum stage.
 
@@ -141,6 +187,7 @@ def get_curriculum_target(
         step: Current training step.
         total_steps: Total number of training steps.
         targets: Ordered target images, usually from ``make_blur_pyramid``.
+        stage_ratios: Optional non-negative relative duration per target.
 
     Returns:
         The target image corresponding to the current stage.
@@ -148,7 +195,12 @@ def get_curriculum_target(
     if len(targets) == 0:
         raise ValueError("targets must contain at least one image.")
 
-    stage = get_curriculum_stage(step, total_steps, len(targets))
+    stage = get_curriculum_stage(
+        step=step,
+        total_steps=total_steps,
+        num_stages=len(targets),
+        stage_ratios=stage_ratios,
+    )
     return targets[stage]
 
 
@@ -171,13 +223,15 @@ def get_blended_curriculum_target(
     total_steps: int,
     targets: Sequence[torch.Tensor],
     blend_ratio: float = 0.1,
+    stage_ratios: Optional[Sequence[float]] = None,
 ) -> torch.Tensor:
     """Return a curriculum target with smooth transitions between stages.
 
     Near each boundary, this function linearly blends the previous and next
     target image. ``blend_ratio`` controls the transition width as a fraction
-    of one stage. For example, with four stages and ``blend_ratio=0.1``, each
-    transition spans 10% of a stage length centered on the boundary.
+    of the shorter neighboring stage. For equal-length stages and
+    ``blend_ratio=0.1``, each transition spans 10% of one stage length centered
+    on the boundary.
 
     Args:
         step: Current training step.
@@ -185,6 +239,7 @@ def get_blended_curriculum_target(
         targets: Ordered target images, usually from ``make_blur_pyramid``.
         blend_ratio: Fraction of each stage used for boundary blending. Must be
             in ``[0, 1]``. A value of ``0`` disables blending.
+        stage_ratios: Optional non-negative relative duration per target.
 
     Returns:
         Either the active stage target or a blended target near a boundary.
@@ -197,16 +252,33 @@ def get_blended_curriculum_target(
         raise ValueError(f"blend_ratio must be in [0, 1], got {blend_ratio}.")
 
     num_stages = len(targets)
-    stage = get_curriculum_stage(step, total_steps, num_stages)
+    ratios = _normalize_stage_ratios(num_stages, stage_ratios)
+    stage = get_curriculum_stage(
+        step=step,
+        total_steps=total_steps,
+        num_stages=num_stages,
+        stage_ratios=ratios,
+    )
     if num_stages == 1 or blend_ratio == 0.0:
         return targets[stage]
 
     progress = min(max(float(step) / float(total_steps), 0.0), 1.0)
-    stage_length = 1.0 / float(num_stages)
-    half_blend_width = 0.5 * blend_ratio * stage_length
+    stage_lengths = ratios
+    if stage_lengths is None:
+        stage_lengths = [1.0 / float(num_stages)] * num_stages
 
+    cumulative = 0.0
     for next_stage in range(1, num_stages):
-        boundary = next_stage * stage_length
+        cumulative += stage_lengths[next_stage - 1]
+        boundary = cumulative
+        transition_width = blend_ratio * min(
+            stage_lengths[next_stage - 1],
+            stage_lengths[next_stage],
+        )
+        if transition_width <= 0.0:
+            continue
+
+        half_blend_width = 0.5 * transition_width
         blend_start = boundary - half_blend_width
         blend_end = boundary + half_blend_width
 

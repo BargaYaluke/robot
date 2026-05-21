@@ -18,8 +18,8 @@ image reconstruction.
 
 The second-stage code adds:
 
-- Frequency Curriculum Learning: train first on blurred low-frequency targets,
-  then gradually transition to the original image.
+- Frequency Curriculum Learning: use a short blurred-target warm-up, then spend
+  most of the training budget on the original image.
 - Edge-Aware Sampling: after a chosen training point, sample more coordinates
   from Sobel edge and texture regions.
 - Region-aware evaluation: report edge-region PSNR and smooth-region PSNR.
@@ -98,8 +98,8 @@ Useful training arguments:
 ### Frequency Curriculum Learning
 
 Frequency curriculum uses blurred versions of the original target image as
-early supervision, then ends on the original image. Evaluation is always done
-against the original image.
+short warm-up supervision, then spends most of the budget on the original
+image. Evaluation is always done against the original image.
 
 ```bash
 python train.py \
@@ -111,20 +111,31 @@ python train.py \
   --lr 1e-4 \
   --use_frequency_curriculum \
   --curriculum_sigmas 4.0,2.0,1.0,0.0 \
+  --curriculum_warmup_ratio 0.2 \
+  --use_blended_curriculum \
+  --curriculum_blend_ratio 0.5 \
   --output_dir results/frequency_curriculum_test
 ```
 
-Optional blended curriculum:
+Optional explicit stage durations:
 
 ```bash
 python train.py \
   --image_path data/images/test.png \
   --model_type fourier_mlp \
   --use_frequency_curriculum \
+  --curriculum_sigmas 4.0,2.0,1.0,0.0 \
+  --curriculum_stage_ratios 0.05,0.05,0.10,0.80 \
   --use_blended_curriculum \
-  --curriculum_blend_ratio 0.1 \
-  --output_dir results/blended_curriculum_test
+  --curriculum_blend_ratio 0.5 \
+  --output_dir results/custom_curriculum_test
 ```
+
+When `--curriculum_stage_ratios` is omitted, all blurred stages share
+`--curriculum_warmup_ratio` and the final original-image stage receives the
+remaining steps. If `--curriculum_stage_ratios` is provided, its length must
+match `--curriculum_sigmas` after the final `0.0` original-image stage is
+appended if needed.
 
 ### Edge-Aware Sampling
 
@@ -161,18 +172,28 @@ python train.py \
   --batch_size 2048 \
   --lr 1e-4 \
   --use_frequency_curriculum \
+  --curriculum_sigmas 4.0,2.0,1.0,0.0 \
+  --curriculum_warmup_ratio 0.2 \
+  --use_blended_curriculum \
+  --curriculum_blend_ratio 0.5 \
   --use_edge_sampling \
+  --align_edge_start_to_original \
   --output_dir results/full_method_test
 ```
+
+With `--align_edge_start_to_original`, edge-aware sampling is delayed until the
+curriculum has reached the original-image target, so it does not over-sample
+edges while the supervision is still blurred.
 
 ## Standard Experiments
 
 Run the four standard single-image settings:
 
 1. Baseline: Fourier MLP, uniform sampling, original target.
-2. Frequency Curriculum: Fourier MLP, curriculum target, uniform sampling.
+2. Frequency Curriculum: Fourier MLP, short blended curriculum warm-up, uniform sampling.
 3. Edge Sampling: Fourier MLP, original target, edge-aware sampling.
-4. Full Method: Fourier MLP, curriculum target, edge-aware sampling.
+4. Full Method: Fourier MLP, short blended curriculum warm-up, edge-aware sampling
+   aligned to the original-image stage.
 
 ```bash
 python run_experiments.py \
@@ -183,6 +204,28 @@ python run_experiments.py \
   --lr 1e-4 \
   --output_root results/standard_test \
   --seed 42
+```
+
+The standard experiment runner uses a short blended curriculum by default:
+
+- `--curriculum_warmup_ratio 0.2`: all blurred stages together occupy the
+  first 20% of training.
+- `--curriculum_blend_ratio 0.5`: transitions blend over half of the shorter
+  neighboring stage.
+- `--curriculum_sigmas 4.0,2.0,1.0,0.0`: default low-to-high frequency target
+  stages.
+- `--edge_start_ratio 0.5`: edge-aware sampling starts halfway through edge
+  and full-method runs unless a later aligned start is required.
+- `--edge_ratio 0.5`: half of each edge-sampling batch is edge-biased.
+
+To sweep a custom curriculum schedule without editing code:
+
+```bash
+python run_experiments.py \
+  --image_path data/images/test.png \
+  --curriculum_sigmas 4.0,2.0,1.0,0.0 \
+  --curriculum_stage_ratios 0.05,0.05,0.10,0.80 \
+  --output_root results/custom_schedule_test
 ```
 
 Summarize the four `summary.json` files into a CSV table and a markdown table:

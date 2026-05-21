@@ -82,11 +82,14 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--use_frequency_curriculum", action="store_true")
     parser.add_argument("--curriculum_sigmas", type=str, default="4.0,2.0,1.0,0.0")
+    parser.add_argument("--curriculum_stage_ratios", type=str, default="")
+    parser.add_argument("--curriculum_warmup_ratio", type=float, default=0.2)
     parser.add_argument("--use_blended_curriculum", action="store_true")
-    parser.add_argument("--curriculum_blend_ratio", type=float, default=0.1)
+    parser.add_argument("--curriculum_blend_ratio", type=float, default=0.5)
 
     parser.add_argument("--use_edge_sampling", action="store_true")
     parser.add_argument("--edge_start_ratio", type=float, default=0.5)
+    parser.add_argument("--align_edge_start_to_original", action="store_true")
     parser.add_argument("--edge_alpha", type=float, default=0.2)
     parser.add_argument("--edge_beta", type=float, default=1.0)
     parser.add_argument("--edge_ratio", type=float, default=0.5)
@@ -119,6 +122,77 @@ def ensure_final_original_sigma(sigmas: Sequence[float]) -> List[float]:
     return sigma_list
 
 
+def resolve_curriculum_stage_ratios(
+    sigmas: Sequence[float],
+    explicit_ratios: str,
+    warmup_ratio: float,
+) -> List[float]:
+    """Resolve custom or default stage durations for frequency curriculum.
+
+    By default, all blurred stages share a short warm-up window and the final
+    original-image stage receives the remaining budget. This keeps curriculum
+    supervision from consuming most of a limited training run.
+    """
+    num_stages = len(sigmas)
+    if num_stages == 0:
+        raise ValueError("curriculum_sigmas must contain at least one value.")
+
+    if explicit_ratios.strip():
+        ratios = parse_float_list(explicit_ratios, "curriculum_stage_ratios")
+        if len(ratios) != num_stages:
+            raise ValueError(
+                "curriculum_stage_ratios length must match curriculum_sigmas "
+                f"after appending 0.0 if needed, got {len(ratios)} and {num_stages}."
+            )
+    elif num_stages == 1:
+        ratios = [1.0]
+    else:
+        blurred_stage_count = num_stages - 1
+        blurred_ratio = warmup_ratio / float(blurred_stage_count)
+        ratios = [blurred_ratio] * blurred_stage_count + [1.0 - warmup_ratio]
+
+    if any(ratio < 0.0 for ratio in ratios):
+        raise ValueError("curriculum_stage_ratios must be non-negative.")
+    if sum(ratios) <= 0.0:
+        raise ValueError("curriculum_stage_ratios must contain positive total duration.")
+    if ratios[-1] <= 0.0:
+        raise ValueError(
+            "The final original-image curriculum stage must have positive duration."
+        )
+
+    total = sum(ratios)
+    return [ratio / total for ratio in ratios]
+
+
+def get_original_stage_start_ratio(stage_ratios: Sequence[float]) -> float:
+    """Return the progress ratio where the final original-image stage starts."""
+    if not stage_ratios:
+        raise ValueError("stage_ratios must contain at least one value.")
+    total = sum(float(ratio) for ratio in stage_ratios)
+    if total <= 0.0:
+        raise ValueError("stage_ratios must contain positive total duration.")
+    return sum(float(ratio) for ratio in stage_ratios[:-1]) / total
+
+
+def resolve_effective_edge_start_ratio(
+    args: argparse.Namespace,
+    curriculum_stage_ratios: Optional[Sequence[float]],
+) -> float:
+    """Apply optional edge/curriculum alignment for full-method experiments."""
+    edge_start_ratio = float(args.edge_start_ratio)
+    if (
+        args.use_edge_sampling
+        and args.use_frequency_curriculum
+        and args.align_edge_start_to_original
+        and curriculum_stage_ratios is not None
+    ):
+        edge_start_ratio = max(
+            edge_start_ratio,
+            get_original_stage_start_ratio(curriculum_stage_ratios),
+        )
+    return edge_start_ratio
+
+
 def validate_args(args: argparse.Namespace) -> None:
     """Fail early on invalid training arguments."""
     if args.image_size <= 0:
@@ -143,6 +217,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("save_interval must be non-negative.")
     if not 0.0 <= args.curriculum_blend_ratio <= 1.0:
         raise ValueError("curriculum_blend_ratio must be in [0, 1].")
+    if not 0.0 <= args.curriculum_warmup_ratio < 1.0:
+        raise ValueError("curriculum_warmup_ratio must be in [0, 1).")
     if not 0.0 <= args.edge_start_ratio <= 1.0:
         raise ValueError("edge_start_ratio must be in [0, 1].")
     if args.edge_alpha < 0.0:
@@ -163,6 +239,11 @@ def validate_args(args: argparse.Namespace) -> None:
     curriculum_sigmas = parse_float_list(args.curriculum_sigmas, "curriculum_sigmas")
     if any(sigma < 0.0 for sigma in curriculum_sigmas):
         raise ValueError("curriculum_sigmas must be non-negative.")
+    resolve_curriculum_stage_ratios(
+        sigmas=ensure_final_original_sigma(curriculum_sigmas),
+        explicit_ratios=args.curriculum_stage_ratios,
+        warmup_ratio=args.curriculum_warmup_ratio,
+    )
 
     target_psnrs = parse_float_list(args.target_psnrs, "target_psnrs")
     if any(target <= 0.0 for target in target_psnrs):
@@ -354,12 +435,18 @@ def get_current_curriculum_stage(
     step: int,
     total_steps: int,
     curriculum_rgbs: Optional[Sequence[torch.Tensor]],
+    curriculum_stage_ratios: Optional[Sequence[float]],
 ) -> Optional[int]:
     """Return the active curriculum stage, or None when curriculum is disabled."""
     if curriculum_rgbs is None:
         return None
     progress_step = get_curriculum_progress_step(step, total_steps)
-    return get_curriculum_stage(progress_step, total_steps, len(curriculum_rgbs))
+    return get_curriculum_stage(
+        step=progress_step,
+        total_steps=total_steps,
+        num_stages=len(curriculum_rgbs),
+        stage_ratios=curriculum_stage_ratios,
+    )
 
 
 def get_sampling_visualization_steps(num_steps: int, edge_start_step: int) -> List[int]:
@@ -375,8 +462,10 @@ def get_sampling_visualization_steps(num_steps: int, edge_start_step: int) -> Li
 def build_hyperparameter_summary(
     args: argparse.Namespace,
     curriculum_sigmas: Sequence[float],
+    curriculum_stage_ratios: Optional[Sequence[float]],
     target_psnrs: Sequence[float],
     edge_start_step: int,
+    effective_edge_start_ratio: float,
     h: int,
     w: int,
     device: torch.device,
@@ -384,8 +473,12 @@ def build_hyperparameter_summary(
     """Collect run settings in JSON-friendly form for summary tables."""
     hyperparameters = vars(args).copy()
     hyperparameters["curriculum_sigmas"] = list(curriculum_sigmas)
+    hyperparameters["curriculum_stage_ratios"] = (
+        None if curriculum_stage_ratios is None else list(curriculum_stage_ratios)
+    )
     hyperparameters["target_psnrs"] = list(target_psnrs)
     hyperparameters["edge_start_step"] = int(edge_start_step)
+    hyperparameters["effective_edge_start_ratio"] = float(effective_edge_start_ratio)
     hyperparameters["image_height"] = int(h)
     hyperparameters["image_width"] = int(w)
     hyperparameters["device"] = str(device)
@@ -449,6 +542,15 @@ def main() -> None:
     curriculum_sigmas = ensure_final_original_sigma(
         parse_float_list(args.curriculum_sigmas, "curriculum_sigmas")
     )
+    curriculum_stage_ratios = (
+        resolve_curriculum_stage_ratios(
+            sigmas=curriculum_sigmas,
+            explicit_ratios=args.curriculum_stage_ratios,
+            warmup_ratio=args.curriculum_warmup_ratio,
+        )
+        if args.use_frequency_curriculum
+        else None
+    )
     target_psnrs = parse_float_list(args.target_psnrs, "target_psnrs")
     set_seed(args.seed)
 
@@ -469,7 +571,11 @@ def main() -> None:
             alpha=args.edge_alpha,
             beta=args.edge_beta,
         ).to(device)
-    edge_start_step = int(args.edge_start_ratio * args.num_steps)
+    effective_edge_start_ratio = resolve_effective_edge_start_ratio(
+        args=args,
+        curriculum_stage_ratios=curriculum_stage_ratios,
+    )
+    edge_start_step = int(effective_edge_start_ratio * args.num_steps)
     sampling_visualization_steps = set(
         get_sampling_visualization_steps(args.num_steps, edge_start_step)
     )
@@ -508,7 +614,12 @@ def main() -> None:
     print(f"Image: {args.image_path} -> {h}x{w}")
     print(f"Model: {args.model_type}")
     print(f"Frequency curriculum: {args.use_frequency_curriculum}")
+    if curriculum_stage_ratios is not None:
+        print(f"Curriculum sigmas: {curriculum_sigmas}")
+        print(f"Curriculum stage ratios: {curriculum_stage_ratios}")
     print(f"Edge-aware sampling: {args.use_edge_sampling}")
+    if args.use_edge_sampling:
+        print(f"Edge start ratio: {effective_edge_start_ratio:.4f}")
 
     progress = trange(1, args.num_steps + 1, desc="Training", dynamic_ncols=True)
     last_loss = 0.0
@@ -567,6 +678,7 @@ def main() -> None:
             step=step,
             total_steps=args.num_steps,
             curriculum_rgbs=curriculum_rgbs,
+            curriculum_stage_ratios=curriculum_stage_ratios,
         )
         curriculum_progress_step = get_curriculum_progress_step(step, args.num_steps)
         if curriculum_rgbs is None:
@@ -577,12 +689,14 @@ def main() -> None:
                 total_steps=args.num_steps,
                 targets=curriculum_rgbs,
                 blend_ratio=args.curriculum_blend_ratio,
+                stage_ratios=curriculum_stage_ratios,
             )
         else:
             current_rgb = get_curriculum_target(
                 step=curriculum_progress_step,
                 total_steps=args.num_steps,
                 targets=curriculum_rgbs,
+                stage_ratios=curriculum_stage_ratios,
             )
 
         batch_coords = coords[indices]
@@ -678,6 +792,7 @@ def main() -> None:
         step=args.num_steps,
         total_steps=args.num_steps,
         curriculum_rgbs=curriculum_rgbs,
+        curriculum_stage_ratios=curriculum_stage_ratios,
     )
     final_sampling_mode = get_sampling_mode(
         use_edge_sampling=args.use_edge_sampling,
@@ -703,8 +818,10 @@ def main() -> None:
     hyperparameters = build_hyperparameter_summary(
         args=args,
         curriculum_sigmas=curriculum_sigmas,
+        curriculum_stage_ratios=curriculum_stage_ratios,
         target_psnrs=target_psnrs,
         edge_start_step=edge_start_step,
+        effective_edge_start_ratio=effective_edge_start_ratio,
         h=h,
         w=w,
         device=device,
