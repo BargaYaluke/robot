@@ -1,23 +1,34 @@
 """Training entry point for single-image INR fitting.
 
 This script fits one RGB image with either a vanilla coordinate MLP or a
+<<<<<<< HEAD
 Fourier Feature MLP. The default path keeps the original uniform-sampling
 baseline, while optional flags enable frequency curriculum learning and
 edge-aware coordinate sampling for second-stage experiments.
+=======
+Fourier Feature MLP. Coordinates are sampled uniformly at random during
+training; no frequency curriculum or edge-aware sampling is implemented here.
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 """
 
 import argparse
 import csv
+<<<<<<< HEAD
 import json
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+=======
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 
 import torch
 import torch.nn.functional as F
 from tqdm import trange
 
 from data.image_dataset import image_to_coord_rgb, load_image
+<<<<<<< HEAD
 from methods.edge_sampler import (
     compute_sobel_edge_map,
     make_sampling_prob,
@@ -55,6 +66,17 @@ METRIC_FIELDNAMES = [
     "elapsed_time_seconds",
 ]
 
+=======
+from models import FourierMLP, VanillaMLP
+from utils.metrics import compute_psnr, compute_ssim
+from utils.seed import set_seed
+from utils.visualization import (
+    save_comparison_image,
+    save_image_tensor,
+    save_psnr_curve,
+)
+
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for single-image fitting."""
@@ -80,6 +102,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_dir", type=str, default="results")
 
+<<<<<<< HEAD
     parser.add_argument("--use_frequency_curriculum", action="store_true")
     parser.add_argument("--curriculum_sigmas", type=str, default="4.0,2.0,1.0,0.0")
     parser.add_argument("--use_blended_curriculum", action="store_true")
@@ -119,6 +142,11 @@ def ensure_final_original_sigma(sigmas: Sequence[float]) -> List[float]:
     return sigma_list
 
 
+=======
+    return parser.parse_args()
+
+
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 def validate_args(args: argparse.Namespace) -> None:
     """Fail early on invalid training arguments."""
     if args.image_size <= 0:
@@ -141,6 +169,7 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("eval_interval must be positive.")
     if args.save_interval < 0:
         raise ValueError("save_interval must be non-negative.")
+<<<<<<< HEAD
     if not 0.0 <= args.curriculum_blend_ratio <= 1.0:
         raise ValueError("curriculum_blend_ratio must be in [0, 1].")
     if not 0.0 <= args.edge_start_ratio <= 1.0:
@@ -167,6 +196,8 @@ def validate_args(args: argparse.Namespace) -> None:
     target_psnrs = parse_float_list(args.target_psnrs, "target_psnrs")
     if any(target <= 0.0 for target in target_psnrs):
         raise ValueError("target_psnrs must be positive.")
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 
 
 def build_model(args: argparse.Namespace) -> torch.nn.Module:
@@ -196,7 +227,10 @@ def make_output_dirs(output_dir: str) -> Dict[str, Path]:
         "reconstructions": root / "reconstructions",
         "curves": root / "curves",
         "logs": root / "logs",
+<<<<<<< HEAD
         "visualizations": root / "visualizations",
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
     }
     for directory in dirs.values():
         directory.mkdir(parents=True, exist_ok=True)
@@ -241,6 +275,7 @@ def evaluate_full_image(
     model: torch.nn.Module,
     coords: torch.Tensor,
     target_img: torch.Tensor,
+<<<<<<< HEAD
     edge_map_2d: torch.Tensor,
     edge_threshold: float,
     h: int,
@@ -262,16 +297,38 @@ def evaluate_full_image(
 
 def save_metrics_csv(records: List[Dict[str, object]], path: Path) -> None:
     """Save structured metric records as a table-friendly CSV file."""
+=======
+    h: int,
+    w: int,
+    device: torch.device,
+) -> Tuple[torch.Tensor, float, float]:
+    """Reconstruct the full image and compute PSNR and SSIM."""
+    pred_img = reconstruct(model, coords, h, w, device)
+    psnr = compute_psnr(pred_img, target_img)
+    ssim = compute_ssim(pred_img, target_img)
+    return pred_img, psnr, ssim
+
+
+def save_log_csv(records: List[Dict[str, float]], path: Path) -> None:
+    """Save training/evaluation records as CSV."""
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
     if not records:
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
+<<<<<<< HEAD
     with open(path, "w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=METRIC_FIELDNAMES)
+=======
+    fieldnames = ["step", "loss", "psnr", "ssim"]
+    with open(path, "w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
         writer.writeheader()
         writer.writerows(records)
 
 
+<<<<<<< HEAD
 def save_json(data: object, path: Path) -> None:
     """Save JSON data with stable formatting for later analysis."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -302,6 +359,21 @@ def record_metrics(
         "current_curriculum_stage": current_curriculum_stage,
         "sampling_mode": sampling_mode,
         "elapsed_time_seconds": float(elapsed_time_seconds),
+=======
+def record_metrics(
+    records: List[Dict[str, float]],
+    step: int,
+    loss: float,
+    psnr: float,
+    ssim: float,
+) -> None:
+    """Append or update a metric row for a training step."""
+    row = {
+        "step": int(step),
+        "loss": float(loss),
+        "psnr": float(psnr),
+        "ssim": float(ssim),
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
     }
     if records and int(records[-1]["step"]) == step:
         records[-1] = row
@@ -309,6 +381,7 @@ def record_metrics(
         records.append(row)
 
 
+<<<<<<< HEAD
 def format_optional_metric(value: Optional[float]) -> str:
     """Format optional metrics for compact console logging."""
     if value is None:
@@ -423,11 +496,17 @@ def build_training_summary(
     return summary
 
 
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 def save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     args: argparse.Namespace,
+<<<<<<< HEAD
     metrics: List[Dict[str, object]],
+=======
+    metrics: List[Dict[str, float]],
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
     path: Path,
 ) -> None:
     """Save model, optimizer, config, and metric history."""
@@ -446,10 +525,13 @@ def main() -> None:
     """Train a coordinate-based INR model on one image."""
     args = parse_args()
     validate_args(args)
+<<<<<<< HEAD
     curriculum_sigmas = ensure_final_original_sigma(
         parse_float_list(args.curriculum_sigmas, "curriculum_sigmas")
     )
     target_psnrs = parse_float_list(args.target_psnrs, "target_psnrs")
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
     set_seed(args.seed)
 
     output_dirs = make_output_dirs(args.output_dir)
@@ -461,6 +543,7 @@ def main() -> None:
     coords = coords.to(device)
     rgb = rgb.to(device)
 
+<<<<<<< HEAD
     edge_map_2d, edge_map_flat = compute_sobel_edge_map(target_img)
     edge_prob: Optional[torch.Tensor] = None
     if args.use_edge_sampling:
@@ -496,17 +579,27 @@ def main() -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     metrics: List[Dict[str, object]] = []
+=======
+    model = build_model(args).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+
+    metrics: List[Dict[str, float]] = []
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
     psnr_records: List[Tuple[int, float]] = []
     latest_eval_step = 0
     latest_pred_img: Optional[torch.Tensor] = None
     latest_psnr = 0.0
     latest_ssim = 0.0
+<<<<<<< HEAD
     latest_edge_psnr: Optional[float] = None
     latest_smooth_psnr: Optional[float] = None
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 
     print(f"Device: {device}")
     print(f"Image: {args.image_path} -> {h}x{w}")
     print(f"Model: {args.model_type}")
+<<<<<<< HEAD
     print(f"Frequency curriculum: {args.use_frequency_curriculum}")
     print(f"Edge-aware sampling: {args.use_edge_sampling}")
 
@@ -587,6 +680,17 @@ def main() -> None:
 
         batch_coords = coords[indices]
         batch_rgb = current_rgb[indices]
+=======
+
+    progress = trange(1, args.num_steps + 1, desc="Training", dynamic_ncols=True)
+    last_loss = 0.0
+
+    for step in progress:
+        # Uniform random coordinate sampling. This is the baseline sampler.
+        indices = torch.randint(0, coords.shape[0], (args.batch_size,), device=device)
+        batch_coords = coords[indices]
+        batch_rgb = rgb[indices]
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 
         pred_rgb = model(batch_coords)
         loss = F.mse_loss(pred_rgb, batch_rgb)
@@ -600,16 +704,24 @@ def main() -> None:
 
         should_eval = step % args.eval_interval == 0 or step == args.num_steps
         if should_eval:
+<<<<<<< HEAD
             pred_img, psnr, ssim, edge_psnr, smooth_psnr = evaluate_full_image(
                 model=model,
                 coords=coords,
                 target_img=target_img,
                 edge_map_2d=edge_map_2d,
                 edge_threshold=args.edge_threshold,
+=======
+            pred_img, psnr, ssim = evaluate_full_image(
+                model=model,
+                coords=coords,
+                target_img=target_img,
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
                 h=h,
                 w=w,
                 device=device,
             )
+<<<<<<< HEAD
             elapsed_time_seconds = time.perf_counter() - training_start_time
             record_metrics(
                 records=metrics,
@@ -626,20 +738,32 @@ def main() -> None:
             psnr_records.append((step, psnr))
             save_metrics_csv(metrics, output_dirs["root"] / "metrics.csv")
             save_json(metrics, output_dirs["root"] / "metrics.json")
+=======
+            record_metrics(metrics, step, last_loss, psnr, ssim)
+            psnr_records.append((step, psnr))
+            save_log_csv(metrics, output_dirs["logs"] / "train_log.csv")
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
             latest_eval_step = step
             latest_pred_img = pred_img
             latest_psnr = psnr
             latest_ssim = ssim
+<<<<<<< HEAD
             latest_edge_psnr = edge_psnr
             latest_smooth_psnr = smooth_psnr
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 
             print(
                 f"Step {step:06d} | "
                 f"Loss {last_loss:.6f} | "
                 f"PSNR {psnr:.4f} | "
+<<<<<<< HEAD
                 f"SSIM {ssim:.6f} | "
                 f"Edge PSNR {format_optional_metric(edge_psnr)} | "
                 f"Smooth PSNR {format_optional_metric(smooth_psnr)}"
+=======
+                f"SSIM {ssim:.6f}"
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
             )
 
         should_save = args.save_interval > 0 and step % args.save_interval == 0
@@ -654,6 +778,7 @@ def main() -> None:
         final_img = latest_pred_img
         final_psnr = latest_psnr
         final_ssim = latest_ssim
+<<<<<<< HEAD
         final_edge_psnr = latest_edge_psnr
         final_smooth_psnr = latest_smooth_psnr
     else:
@@ -669,10 +794,18 @@ def main() -> None:
             target_img=target_img,
             edge_map_2d=edge_map_2d,
             edge_threshold=args.edge_threshold,
+=======
+    else:
+        final_img, final_psnr, final_ssim = evaluate_full_image(
+            model=model,
+            coords=coords,
+            target_img=target_img,
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
             h=h,
             w=w,
             device=device,
         )
+<<<<<<< HEAD
     total_training_time_seconds = time.perf_counter() - training_start_time
     final_curriculum_stage = get_current_curriculum_stage(
         step=args.num_steps,
@@ -720,6 +853,12 @@ def main() -> None:
         target_psnrs=target_psnrs,
     )
 
+=======
+    record_metrics(metrics, args.num_steps, last_loss, final_psnr, final_ssim)
+    if not psnr_records or psnr_records[-1][0] != args.num_steps:
+        psnr_records.append((args.num_steps, final_psnr))
+
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
     save_image_tensor(final_img, str(output_dirs["reconstructions"] / "final_reconstruction.png"))
     save_comparison_image(
         gt=target_img,
@@ -727,9 +866,13 @@ def main() -> None:
         path=str(output_dirs["reconstructions"] / "final_comparison.png"),
     )
     save_psnr_curve(psnr_records, str(output_dirs["curves"] / "psnr_curve.png"))
+<<<<<<< HEAD
     save_metrics_csv(metrics, output_dirs["root"] / "metrics.csv")
     save_json(metrics, output_dirs["root"] / "metrics.json")
     save_json(summary, output_dirs["root"] / "summary.json")
+=======
+    save_log_csv(metrics, output_dirs["logs"] / "train_log.csv")
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
     save_checkpoint(
         model=model,
         optimizer=optimizer,
@@ -740,9 +883,13 @@ def main() -> None:
 
     print(
         f"Final | Loss {last_loss:.6f} | "
+<<<<<<< HEAD
         f"PSNR {final_psnr:.4f} | SSIM {final_ssim:.6f} | "
         f"Edge PSNR {format_optional_metric(final_edge_psnr)} | "
         f"Smooth PSNR {format_optional_metric(final_smooth_psnr)}"
+=======
+        f"PSNR {final_psnr:.4f} | SSIM {final_ssim:.6f}"
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
     )
     print(f"Outputs saved to: {output_dirs['root']}")
 

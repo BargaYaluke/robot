@@ -1,14 +1,21 @@
 """Visualization and result-saving helpers for INR image fitting."""
 
 from pathlib import Path
+<<<<<<< HEAD
 from typing import List, Optional, Sequence, Tuple, Union
+=======
+from typing import List, Optional, Sequence, Tuple
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+<<<<<<< HEAD
 ArrayLike = Union[np.ndarray, torch.Tensor]
 
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 
 def _ensure_parent_dir(path: str) -> None:
     """Create the parent directory for an output file if needed."""
@@ -26,6 +33,7 @@ def _to_image_numpy(image: torch.Tensor) -> np.ndarray:
     return image_np
 
 
+<<<<<<< HEAD
 def _to_numpy_array(array: ArrayLike) -> np.ndarray:
     """Convert a tensor or NumPy array to a detached NumPy array."""
     if isinstance(array, torch.Tensor):
@@ -38,6 +46,8 @@ def _to_numpy_array(array: ArrayLike) -> np.ndarray:
     raise TypeError(f"array must be a torch.Tensor or np.ndarray, got {type(array).__name__}.")
 
 
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 def save_image_tensor(image: torch.Tensor, path: str) -> None:
     """Save an RGB image tensor to disk.
 
@@ -76,6 +86,7 @@ def save_psnr_curve(psnr_records: Sequence[Tuple[int, float]], path: str) -> Non
     plt.close(fig)
 
 
+<<<<<<< HEAD
 def save_heatmap(array: ArrayLike, path: str, title: Optional[str] = None) -> None:
     """Save a 2D heatmap with a colorbar.
 
@@ -161,6 +172,8 @@ def save_sampling_points_visualization(
     plt.close(fig)
 
 
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 def save_comparison_image(gt: torch.Tensor, pred: torch.Tensor, path: str) -> None:
     """Save a side-by-side image comparison.
 

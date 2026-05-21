@@ -1,9 +1,13 @@
 # INR Fourier Project
 
 This project is a clean PyTorch implementation of implicit neural
+<<<<<<< HEAD
 representation (INR) for single-image fitting. It supports both the first-stage
 baseline pipeline and second-stage research strategies for convergence-speed
 comparison.
+=======
+representation (INR) for single-image fitting.
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 
 An INR image model represents an image as a function:
 
@@ -16,6 +20,7 @@ values. A vanilla coordinate MLP is included as a weak baseline, while a
 Fourier Feature Network is used as the main base model for higher-frequency
 image reconstruction.
 
+<<<<<<< HEAD
 The second-stage code adds:
 
 - Frequency Curriculum Learning: train first on blurred low-frequency targets,
@@ -25,6 +30,8 @@ The second-stage code adds:
 - Region-aware evaluation: report edge-region PSNR and smooth-region PSNR.
 - Structured experiment logging for convergence and limited-budget comparison.
 
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 ## Installation
 
 Create and activate an environment:
@@ -95,6 +102,7 @@ Useful training arguments:
 - `--save_interval`: intermediate reconstruction saving interval.
 - `--seed`: random seed for reproducibility.
 
+<<<<<<< HEAD
 ### Frequency Curriculum Learning
 
 Frequency curriculum uses blurred versions of the original target image as
@@ -199,6 +207,8 @@ python plot_convergence_comparison.py \
   --experiment_root results/standard_test
 ```
 
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 ## Evaluation
 
 Evaluate a trained checkpoint:
@@ -223,15 +233,19 @@ Training outputs:
 ```text
 results/<run_name>/
 +-- model_checkpoint.pt
+<<<<<<< HEAD
 +-- metrics.csv
 +-- metrics.json
 +-- summary.json
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 +-- reconstructions/
 |   +-- reconstruction_step_XXXXXX.png
 |   +-- final_reconstruction.png
 |   `-- final_comparison.png
 +-- curves/
 |   `-- psnr_curve.png
+<<<<<<< HEAD
 +-- logs/
 `-- visualizations/
     +-- edge_map.png
@@ -258,6 +272,12 @@ evaluation record contains:
 values, total training time, and important hyperparameters. It is intended for
 later table generation.
 
+=======
+`-- logs/
+    `-- train_log.csv
+```
+
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 Evaluation outputs:
 
 ```text
@@ -269,6 +289,7 @@ results/<run_name>/eval/
 
 The main reported metrics are:
 
+<<<<<<< HEAD
 - PSNR: peak signal-to-noise ratio over the full image.
 - SSIM: structural similarity index over the full image.
 - Edge PSNR: PSNR computed only on Sobel edge-mask pixels.
@@ -280,6 +301,10 @@ Convergence metrics include:
 - `iter_to_35db`
 - `iter_to_38db`
 - `iter_to_40db`
+=======
+- PSNR: peak signal-to-noise ratio.
+- SSIM: structural similarity index.
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 
 ## Project Structure
 
@@ -287,9 +312,12 @@ Convergence metrics include:
 inr_fourier_project/
 +-- train.py
 +-- eval.py
+<<<<<<< HEAD
 +-- run_experiments.py
 +-- summarize_results.py
 +-- plot_convergence_comparison.py
+=======
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 +-- requirements.txt
 +-- README.md
 +-- configs/
@@ -301,17 +329,22 @@ inr_fourier_project/
 +-- data/
 |   +-- image_dataset.py
 |   `-- images/
+<<<<<<< HEAD
 +-- methods/
 |   +-- frequency_curriculum.py
 |   `-- edge_sampler.py
 +-- utils/
 |   +-- convergence.py
+=======
++-- utils/
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 |   +-- metrics.py
 |   +-- visualization.py
 |   `-- seed.py
 `-- results/
     +-- reconstructions/
     +-- curves/
+<<<<<<< HEAD
     +-- logs/
     `-- visualizations/
 ```
@@ -327,3 +360,17 @@ original image.
 
 During edge-aware sampling, the Sobel edge map and edge/smooth evaluation masks
 are computed from the original image, not from blurred curriculum targets.
+=======
+    `-- logs/
+```
+
+## Future Extensions
+
+Planned research extensions:
+
+- Frequency curriculum learning.
+- Edge-aware sampling.
+
+These modules are intentionally not implemented yet, keeping the current
+baseline simple and easy to compare.
+>>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
