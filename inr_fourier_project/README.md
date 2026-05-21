@@ -1,13 +1,9 @@
 # INR Fourier Project
 
 This project is a clean PyTorch implementation of implicit neural
-<<<<<<< HEAD
 representation (INR) for single-image fitting. It supports both the first-stage
 baseline pipeline and second-stage research strategies for convergence-speed
 comparison.
-=======
-representation (INR) for single-image fitting.
->>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 
 An INR image model represents an image as a function:
 
@@ -20,7 +16,6 @@ values. A vanilla coordinate MLP is included as a weak baseline, while a
 Fourier Feature Network is used as the main base model for higher-frequency
 image reconstruction.
 
-<<<<<<< HEAD
 The second-stage code adds:
 
 - Frequency Curriculum Learning: train first on blurred low-frequency targets,
@@ -30,8 +25,6 @@ The second-stage code adds:
 - Region-aware evaluation: report edge-region PSNR and smooth-region PSNR.
 - Structured experiment logging for convergence and limited-budget comparison.
 
-=======
->>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 ## Installation
 
 Create and activate an environment:
