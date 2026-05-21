@@ -15,6 +15,9 @@ METHOD_ORDER = [
     "frequency_curriculum",
     "edge_sampling",
     "full_method",
+    "band_loss",
+    "ramped_edge",
+    "coupled",
 ]
 
 METHOD_LABELS = {
@@ -22,6 +25,9 @@ METHOD_LABELS = {
     "frequency_curriculum": "Frequency Curriculum",
     "edge_sampling": "Edge Sampling",
     "full_method": "Full Method",
+    "band_loss": "Band Loss",
+    "ramped_edge": "Ramped Edge",
+    "coupled": "Coupled",
 }
 
 
@@ -63,12 +69,37 @@ def read_metrics_csv(path: Path) -> List[Dict[str, Optional[float]]]:
     return records
 
 
-def load_all_metrics(experiment_root: Path) -> Dict[str, List[Dict[str, Optional[float]]]]:
-    """Load metrics for all standard methods in fixed order."""
-    metrics = {}
+def load_all_metrics(
+    experiment_root: Path,
+) -> Dict[str, List[Dict[str, Optional[float]]]]:
+    """Load metrics for any methods present under ``experiment_root``.
+
+    Methods listed in :data:`METHOD_ORDER` appear first; any extra method
+    subdirectory with ``metrics.csv`` is appended afterwards. Missing methods
+    from ``METHOD_ORDER`` are skipped so the script works on partial runs.
+    """
+    metrics: Dict[str, List[Dict[str, Optional[float]]]] = {}
+    seen = set()
     for method in METHOD_ORDER:
         metrics_path = experiment_root / method / "metrics.csv"
+        if not metrics_path.exists():
+            continue
         metrics[method] = read_metrics_csv(metrics_path)
+        seen.add(method)
+
+    if experiment_root.is_dir():
+        for entry in sorted(experiment_root.iterdir()):
+            if not entry.is_dir() or entry.name in seen:
+                continue
+            metrics_path = entry / "metrics.csv"
+            if not metrics_path.exists():
+                continue
+            metrics[entry.name] = read_metrics_csv(metrics_path)
+
+    if not metrics:
+        raise FileNotFoundError(
+            f"No method subdirectory with metrics.csv found under {experiment_root}."
+        )
     return metrics
 
 
@@ -79,11 +110,13 @@ def plot_metric(
     title: str,
     output_path: Path,
 ) -> None:
-    """Plot one metric against training steps for all methods."""
+    """Plot one metric against training steps for all available methods."""
     fig, ax = plt.subplots(figsize=(7, 4.5))
     plotted_any = False
 
-    for method in METHOD_ORDER:
+    ordered_methods = [m for m in METHOD_ORDER if m in all_metrics]
+    extra_methods = [m for m in all_metrics if m not in METHOD_ORDER]
+    for method in ordered_methods + extra_methods:
         records = all_metrics[method]
         points = [
             (record["step"], record[metric_key])
@@ -95,7 +128,8 @@ def plot_metric(
 
         steps = [point[0] for point in points]
         values = [point[1] for point in points]
-        ax.plot(steps, values, linewidth=2, label=METHOD_LABELS[method])
+        label = METHOD_LABELS.get(method, method.replace("_", " ").title())
+        ax.plot(steps, values, linewidth=2, label=label)
         plotted_any = True
 
     if not plotted_any:

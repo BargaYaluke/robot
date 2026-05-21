@@ -14,6 +14,9 @@ METHOD_ORDER = [
     "frequency_curriculum",
     "edge_sampling",
     "full_method",
+    "band_loss",
+    "ramped_edge",
+    "coupled",
 ]
 
 TABLE_COLUMNS = [
@@ -67,11 +70,35 @@ def make_row(method: str, summary: Dict[str, object]) -> Dict[str, object]:
 
 
 def load_rows(experiment_root: Path) -> List[Dict[str, object]]:
-    """Load summaries in the standard method order."""
-    rows = []
+    """Load summaries for any methods present under ``experiment_root``.
+
+    Methods listed in :data:`METHOD_ORDER` appear first and in that order.
+    Any additional method subdirectories with a ``summary.json`` file are
+    appended afterwards. Missing methods from ``METHOD_ORDER`` are skipped so
+    the script works with partial ablation runs.
+    """
+    rows: List[Dict[str, object]] = []
+    seen = set()
     for method in METHOD_ORDER:
         summary_path = experiment_root / method / "summary.json"
+        if not summary_path.exists():
+            continue
         rows.append(make_row(method, load_summary(summary_path)))
+        seen.add(method)
+
+    if experiment_root.is_dir():
+        for entry in sorted(experiment_root.iterdir()):
+            if not entry.is_dir() or entry.name in seen:
+                continue
+            summary_path = entry / "summary.json"
+            if not summary_path.exists():
+                continue
+            rows.append(make_row(entry.name, load_summary(summary_path)))
+
+    if not rows:
+        raise FileNotFoundError(
+            f"No method subdirectory with summary.json found under {experiment_root}."
+        )
     return rows
 
 

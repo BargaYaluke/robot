@@ -25,11 +25,21 @@ from methods.edge_sampler import (
     sample_mixed,
     sample_uniform,
 )
+from methods.frequency_band_loss import (
+    band_weighted_mse,
+    compute_band_scalars,
+    make_band_pixel_weights,
+    make_pixel_loss_weight,
+)
 from methods.frequency_curriculum import (
     get_blended_curriculum_target,
     get_curriculum_stage,
     get_curriculum_target,
     make_blur_pyramid,
+)
+from methods.scheduler import (
+    compute_effective_edge_ratio,
+    compute_progress,
 )
 from models import FourierMLP, VanillaMLP
 from utils.convergence import compute_iterations_to_targets, summarize_convergence
@@ -53,6 +63,8 @@ METRIC_FIELDNAMES = [
     "current_curriculum_stage",
     "sampling_mode",
     "elapsed_time_seconds",
+    "effective_edge_ratio",
+    "schedule_progress",
 ]
 
 
@@ -94,6 +106,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--edge_beta", type=float, default=1.0)
     parser.add_argument("--edge_ratio", type=float, default=0.5)
     parser.add_argument("--edge_threshold", type=float, default=0.2)
+
+    parser.add_argument("--use_ramped_edge", action="store_true")
+    parser.add_argument("--edge_ramp_start_ratio", type=float, default=0.0)
+    parser.add_argument("--edge_ramp_end_ratio", type=float, default=1.0)
+    parser.add_argument(
+        "--edge_ramp_mode",
+        type=str,
+        default="linear",
+        choices=["linear", "cosine"],
+    )
+
+    parser.add_argument("--use_band_loss", action="store_true")
+    parser.add_argument("--band_sigmas", type=str, default="8.0,4.0,2.0")
+    parser.add_argument("--band_w_low_start", type=float, default=1.0)
+    parser.add_argument("--band_w_low_end", type=float, default=0.3)
+    parser.add_argument("--band_w_high_start", type=float, default=0.3)
+    parser.add_argument("--band_w_high_end", type=float, default=1.5)
+    parser.add_argument(
+        "--band_loss_mode",
+        type=str,
+        default="linear",
+        choices=["linear", "cosine"],
+    )
+    parser.add_argument("--band_loss_start_ratio", type=float, default=0.0)
+    parser.add_argument("--band_loss_end_ratio", type=float, default=1.0)
+
+    parser.add_argument(
+        "--coupled_schedule",
+        action="store_true",
+        help="Force band-loss progress and edge-ramp progress to share one window.",
+    )
 
     parser.add_argument("--target_psnrs", type=str, default="30,35,38,40")
 
@@ -236,6 +279,50 @@ def validate_args(args: argparse.Namespace) -> None:
     if not 0.0 <= args.edge_threshold <= 1.0:
         raise ValueError("edge_threshold must be in [0, 1].")
 
+    if args.use_ramped_edge and not args.use_edge_sampling:
+        raise ValueError("--use_ramped_edge requires --use_edge_sampling.")
+    if not 0.0 <= args.edge_ramp_start_ratio <= 1.0:
+        raise ValueError("edge_ramp_start_ratio must be in [0, 1].")
+    if not 0.0 <= args.edge_ramp_end_ratio <= 1.0:
+        raise ValueError("edge_ramp_end_ratio must be in [0, 1].")
+    if args.edge_ramp_end_ratio < args.edge_ramp_start_ratio:
+        raise ValueError("edge_ramp_end_ratio must be >= edge_ramp_start_ratio.")
+
+    if args.use_band_loss and args.use_frequency_curriculum:
+        raise ValueError(
+            "--use_band_loss and --use_frequency_curriculum cannot be combined. "
+            "Band loss replaces blur-target curriculum."
+        )
+    if args.use_band_loss:
+        band_sigmas = parse_float_list(args.band_sigmas, "band_sigmas")
+        if any(sigma <= 0.0 for sigma in band_sigmas):
+            raise ValueError("band_sigmas must be strictly positive.")
+        for prev, current in zip(band_sigmas[:-1], band_sigmas[1:]):
+            if current >= prev:
+                raise ValueError(
+                    "band_sigmas must be strictly decreasing from coarse to fine."
+                )
+    for name in (
+        "band_w_low_start",
+        "band_w_low_end",
+        "band_w_high_start",
+        "band_w_high_end",
+    ):
+        value = getattr(args, name)
+        if value < 0.0:
+            raise ValueError(f"{name} must be non-negative, got {value}.")
+    if not 0.0 <= args.band_loss_start_ratio <= 1.0:
+        raise ValueError("band_loss_start_ratio must be in [0, 1].")
+    if not 0.0 <= args.band_loss_end_ratio <= 1.0:
+        raise ValueError("band_loss_end_ratio must be in [0, 1].")
+    if args.band_loss_end_ratio < args.band_loss_start_ratio:
+        raise ValueError("band_loss_end_ratio must be >= band_loss_start_ratio.")
+
+    if args.coupled_schedule and not (args.use_band_loss and args.use_ramped_edge):
+        raise ValueError(
+            "--coupled_schedule requires both --use_band_loss and --use_ramped_edge."
+        )
+
     curriculum_sigmas = parse_float_list(args.curriculum_sigmas, "curriculum_sigmas")
     if any(sigma < 0.0 for sigma in curriculum_sigmas):
         raise ValueError("curriculum_sigmas must be non-negative.")
@@ -371,6 +458,8 @@ def record_metrics(
     current_curriculum_stage: Optional[int],
     sampling_mode: str,
     elapsed_time_seconds: float,
+    effective_edge_ratio: Optional[float] = None,
+    schedule_progress: Optional[float] = None,
 ) -> None:
     """Append or update a metric row for a training step."""
     row: Dict[str, object] = {
@@ -383,6 +472,12 @@ def record_metrics(
         "current_curriculum_stage": current_curriculum_stage,
         "sampling_mode": sampling_mode,
         "elapsed_time_seconds": float(elapsed_time_seconds),
+        "effective_edge_ratio": (
+            None if effective_edge_ratio is None else float(effective_edge_ratio)
+        ),
+        "schedule_progress": (
+            None if schedule_progress is None else float(schedule_progress)
+        ),
     }
     if records and int(records[-1]["step"]) == step:
         records[-1] = row
@@ -417,6 +512,40 @@ def get_sampling_mode(
     if edge_ratio >= 1.0:
         return "edge_aware"
     return "mixed_edge"
+
+
+def sampling_mode_from_effective_ratio(effective_edge_ratio: float) -> str:
+    """Return the sampling mode label that matches a ramped edge ratio."""
+    if effective_edge_ratio <= 0.0:
+        return "uniform"
+    if effective_edge_ratio >= 1.0:
+        return "edge_aware"
+    return "mixed_edge"
+
+
+def get_effective_edge_ratio_for_step(
+    args: argparse.Namespace,
+    step: int,
+) -> Tuple[float, float]:
+    """Return ``(effective_edge_ratio, edge_ramp_progress)`` for the step.
+
+    Edge ramp mode replaces the step-flip ``edge_start_ratio`` schedule with a
+    smooth ramp from 0 up to ``--edge_ratio`` over a configurable window. When
+    ramp mode is disabled the function returns the static target ratio along
+    with a placeholder progress of 0.
+    """
+    if not args.use_edge_sampling:
+        return 0.0, 0.0
+    if not args.use_ramped_edge:
+        return float(args.edge_ratio), 0.0
+    progress = compute_progress(
+        step=step,
+        total_steps=args.num_steps,
+        start_ratio=args.edge_ramp_start_ratio,
+        end_ratio=args.edge_ramp_end_ratio,
+        mode=args.edge_ramp_mode,
+    )
+    return compute_effective_edge_ratio(progress, args.edge_ratio), progress
 
 
 def get_curriculum_progress_step(step: int, total_steps: int) -> int:
@@ -466,6 +595,7 @@ def build_hyperparameter_summary(
     target_psnrs: Sequence[float],
     edge_start_step: int,
     effective_edge_start_ratio: float,
+    band_sigmas: Optional[Sequence[float]],
     h: int,
     w: int,
     device: torch.device,
@@ -479,6 +609,9 @@ def build_hyperparameter_summary(
     hyperparameters["target_psnrs"] = list(target_psnrs)
     hyperparameters["edge_start_step"] = int(edge_start_step)
     hyperparameters["effective_edge_start_ratio"] = float(effective_edge_start_ratio)
+    hyperparameters["band_sigmas_resolved"] = (
+        None if band_sigmas is None else [float(sigma) for sigma in band_sigmas]
+    )
     hyperparameters["image_height"] = int(h)
     hyperparameters["image_width"] = int(w)
     hyperparameters["device"] = str(device)
@@ -539,6 +672,10 @@ def main() -> None:
     """Train a coordinate-based INR model on one image."""
     args = parse_args()
     validate_args(args)
+    if args.coupled_schedule:
+        args.band_loss_start_ratio = args.edge_ramp_start_ratio
+        args.band_loss_end_ratio = args.edge_ramp_end_ratio
+        args.band_loss_mode = args.edge_ramp_mode
     curriculum_sigmas = ensure_final_original_sigma(
         parse_float_list(args.curriculum_sigmas, "curriculum_sigmas")
     )
@@ -598,6 +735,17 @@ def main() -> None:
         curriculum_targets = make_blur_pyramid(target_img, sigmas=curriculum_sigmas)
         curriculum_rgbs = flatten_targets_for_training(curriculum_targets, device)
 
+    band_sigmas: Optional[List[float]] = None
+    band_pixel_weights: Optional[torch.Tensor] = None
+    num_bands = 0
+    if args.use_band_loss:
+        band_sigmas = parse_float_list(args.band_sigmas, "band_sigmas")
+        band_pixel_weights = make_band_pixel_weights(
+            image=target_img,
+            band_sigmas=band_sigmas,
+        ).to(device)
+        num_bands = int(band_pixel_weights.shape[0])
+
     model = build_model(args).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -619,19 +767,49 @@ def main() -> None:
         print(f"Curriculum stage ratios: {curriculum_stage_ratios}")
     print(f"Edge-aware sampling: {args.use_edge_sampling}")
     if args.use_edge_sampling:
-        print(f"Edge start ratio: {effective_edge_start_ratio:.4f}")
+        if args.use_ramped_edge:
+            print(
+                "Edge ramp: "
+                f"[{args.edge_ramp_start_ratio:.4f}, {args.edge_ramp_end_ratio:.4f}] "
+                f"({args.edge_ramp_mode}) -> target edge_ratio {args.edge_ratio:.4f}"
+            )
+        else:
+            print(f"Edge start ratio: {effective_edge_start_ratio:.4f}")
+    print(f"Band loss: {args.use_band_loss}")
+    if args.use_band_loss:
+        print(f"Band sigmas: {band_sigmas}")
+        print(
+            "Band schedule: "
+            f"[{args.band_loss_start_ratio:.4f}, {args.band_loss_end_ratio:.4f}] "
+            f"({args.band_loss_mode})"
+        )
+        print(
+            "Band weights: "
+            f"low {args.band_w_low_start:.3f}->{args.band_w_low_end:.3f}, "
+            f"high {args.band_w_high_start:.3f}->{args.band_w_high_end:.3f}"
+        )
+    if args.coupled_schedule:
+        print("Coupled schedule: band loss and edge ramp share one window.")
 
     progress = trange(1, args.num_steps + 1, desc="Training", dynamic_ncols=True)
     last_loss = 0.0
     training_start_time = time.perf_counter()
 
     for step in progress:
-        sampling_mode = get_sampling_mode(
-            use_edge_sampling=args.use_edge_sampling,
+        effective_edge_ratio, edge_ramp_progress = get_effective_edge_ratio_for_step(
+            args=args,
             step=step,
-            edge_start_step=edge_start_step,
-            edge_ratio=args.edge_ratio,
         )
+        if args.use_ramped_edge:
+            sampling_mode = sampling_mode_from_effective_ratio(effective_edge_ratio)
+        else:
+            sampling_mode = get_sampling_mode(
+                use_edge_sampling=args.use_edge_sampling,
+                step=step,
+                edge_start_step=edge_start_step,
+                edge_ratio=args.edge_ratio,
+            )
+
         if sampling_mode == "mixed_edge":
             if edge_prob is None:
                 raise RuntimeError(
@@ -642,7 +820,7 @@ def main() -> None:
                 num_pixels=coords.shape[0],
                 batch_size=args.batch_size,
                 device=device,
-                edge_ratio=args.edge_ratio,
+                edge_ratio=effective_edge_ratio if args.use_ramped_edge else args.edge_ratio,
             )
         elif sampling_mode == "edge_aware":
             if edge_prob is None:
@@ -703,7 +881,31 @@ def main() -> None:
         batch_rgb = current_rgb[indices]
 
         pred_rgb = model(batch_coords)
-        loss = F.mse_loss(pred_rgb, batch_rgb)
+        if args.use_band_loss and band_pixel_weights is not None:
+            band_progress = compute_progress(
+                step=step,
+                total_steps=args.num_steps,
+                start_ratio=args.band_loss_start_ratio,
+                end_ratio=args.band_loss_end_ratio,
+                mode=args.band_loss_mode,
+            )
+            band_scalars = compute_band_scalars(
+                progress=band_progress,
+                num_bands=num_bands,
+                w_low_start=args.band_w_low_start,
+                w_low_end=args.band_w_low_end,
+                w_high_start=args.band_w_high_start,
+                w_high_end=args.band_w_high_end,
+            )
+            pixel_weight_full = make_pixel_loss_weight(
+                band_pixel_weights=band_pixel_weights,
+                band_scalars=band_scalars,
+            )
+            batch_weight = pixel_weight_full[indices]
+            loss = band_weighted_mse(pred_rgb, batch_rgb, batch_weight)
+        else:
+            band_progress = None
+            loss = F.mse_loss(pred_rgb, batch_rgb)
         last_loss = float(loss.detach().cpu().item())
 
         optimizer.zero_grad(set_to_none=True)
@@ -725,6 +927,15 @@ def main() -> None:
                 device=device,
             )
             elapsed_time_seconds = time.perf_counter() - training_start_time
+            recorded_edge_ratio = (
+                effective_edge_ratio if args.use_ramped_edge else None
+            )
+            if args.use_band_loss and band_progress is not None:
+                recorded_schedule_progress: Optional[float] = float(band_progress)
+            elif args.use_ramped_edge:
+                recorded_schedule_progress = float(edge_ramp_progress)
+            else:
+                recorded_schedule_progress = None
             record_metrics(
                 records=metrics,
                 step=step,
@@ -736,6 +947,8 @@ def main() -> None:
                 current_curriculum_stage=current_curriculum_stage,
                 sampling_mode=sampling_mode,
                 elapsed_time_seconds=elapsed_time_seconds,
+                effective_edge_ratio=recorded_edge_ratio,
+                schedule_progress=recorded_schedule_progress,
             )
             psnr_records.append((step, psnr))
             save_metrics_csv(metrics, output_dirs["root"] / "metrics.csv")
@@ -794,12 +1007,31 @@ def main() -> None:
         curriculum_rgbs=curriculum_rgbs,
         curriculum_stage_ratios=curriculum_stage_ratios,
     )
-    final_sampling_mode = get_sampling_mode(
-        use_edge_sampling=args.use_edge_sampling,
+    final_effective_edge_ratio, final_edge_ramp_progress = get_effective_edge_ratio_for_step(
+        args=args,
         step=args.num_steps,
-        edge_start_step=edge_start_step,
-        edge_ratio=args.edge_ratio,
     )
+    if args.use_ramped_edge:
+        final_sampling_mode = sampling_mode_from_effective_ratio(final_effective_edge_ratio)
+    else:
+        final_sampling_mode = get_sampling_mode(
+            use_edge_sampling=args.use_edge_sampling,
+            step=args.num_steps,
+            edge_start_step=edge_start_step,
+            edge_ratio=args.edge_ratio,
+        )
+    if args.use_band_loss:
+        final_schedule_progress: Optional[float] = compute_progress(
+            step=args.num_steps,
+            total_steps=args.num_steps,
+            start_ratio=args.band_loss_start_ratio,
+            end_ratio=args.band_loss_end_ratio,
+            mode=args.band_loss_mode,
+        )
+    elif args.use_ramped_edge:
+        final_schedule_progress = float(final_edge_ramp_progress)
+    else:
+        final_schedule_progress = None
     record_metrics(
         records=metrics,
         step=args.num_steps,
@@ -811,6 +1043,10 @@ def main() -> None:
         current_curriculum_stage=final_curriculum_stage,
         sampling_mode=final_sampling_mode,
         elapsed_time_seconds=total_training_time_seconds,
+        effective_edge_ratio=(
+            final_effective_edge_ratio if args.use_ramped_edge else None
+        ),
+        schedule_progress=final_schedule_progress,
     )
     if not psnr_records or psnr_records[-1][0] != args.num_steps:
         psnr_records.append((args.num_steps, final_psnr))
@@ -822,6 +1058,7 @@ def main() -> None:
         target_psnrs=target_psnrs,
         edge_start_step=edge_start_step,
         effective_edge_start_ratio=effective_edge_start_ratio,
+        band_sigmas=band_sigmas,
         h=h,
         w=w,
         device=device,
