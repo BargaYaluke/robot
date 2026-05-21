@@ -1,10 +1,7 @@
 """Image reconstruction metrics for INR image fitting."""
 
-<<<<<<< HEAD
 from typing import Dict, Optional, Tuple
 
-=======
->>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
 import numpy as np
 import torch
 from skimage.metrics import structural_similarity
@@ -79,7 +76,6 @@ def compute_ssim(pred_img: torch.Tensor, target_img: torch.Tensor) -> float:
             win_size=win_size,
         )
     )
-<<<<<<< HEAD
 
 
 def compute_region_psnr(
@@ -180,5 +176,3 @@ def compute_edge_smooth_psnr(
         "edge_psnr": compute_region_psnr(pred_img, target_img, edge_mask),
         "smooth_psnr": compute_region_psnr(pred_img, target_img, smooth_mask),
     }
-=======
->>>>>>> f610dac054b21fcc513794ac6426b207636e7b32
